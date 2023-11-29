@@ -8,6 +8,9 @@ import yfinance as yf
 import pandas as pd
 import json
 import datetime as dt
+from flask_cors import CORS
+import sys 
+
 
 # Set this variable to "threading", "eventlet" or "gevent" to test the
 # different async modes, or leave it set to None for the application to choose
@@ -15,7 +18,8 @@ import datetime as dt
 async_mode = None
 
 app = Flask(__name__)
-socketio = SocketIO(app, async_mode=async_mode)
+CORS(app)
+socketio = SocketIO(app, async_mode=async_mode, cors_allowed_origins="*")
 thread = None
 thread_lock = Lock()
 display_prices_event = Event()  # Event to control whether to display prices or not
@@ -77,7 +81,7 @@ def monte_carlo_simulation(num_simulations, time_steps, mu, sigma, initial_price
             sim_prices[:, i] = sim_prices[:, i-1] * np.exp((mu - sigma**2 / 2 - lambda_ * (np.exp(mu_j + sigma_j ** 2 / 2) - 1)) * dt + sigma * np.sqrt(dt) * rand + jump)
     else:
         raise ValueError('Invalid diffusion type. Choose either GBM or Jump.')
-    return sim_prices[day][count]
+    return round(sim_prices[day][count],3)
 
 
 def background_thread():
@@ -105,6 +109,7 @@ def background_thread():
 
 @app.route('/')
 def index():
+    print(sys.path)
     return render_template('index.html', async_mode=socketio.async_mode)
 
 @app.route('/update_variables', methods=['POST'])
