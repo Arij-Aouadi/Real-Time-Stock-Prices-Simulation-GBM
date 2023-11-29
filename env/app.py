@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 import pandas as pd
 import json
+import datetime as dt
 
 # Set this variable to "threading", "eventlet" or "gevent" to test the
 # different async modes, or leave it set to None for the application to choose
@@ -20,48 +21,63 @@ thread_lock = Lock()
 display_prices_event = Event()  # Event to control whether to display prices or not
 
 
-url = 'https://api.coinbase.com/v2/prices/btc-usd/spot'
 end_date=''
 start_date=''
 symbol=[]
 numberOfSimulatedDays=0
 numberOfSimulatedPricesPerSec=0
 count=0
-
-def calculate_mu_sigma(symbole, start_date, end_date):
-    # Get the last month's historical data
-    start_date = (pd.to_datetime(end_date) - pd.DateOffset(months=1)).strftime('%Y-%m-%d')
-    # Fetch historical data using yfinance
-    stock_data = yf.download(symbole, start=start_date, end=end_date)
-
-    # Calculate daily returns
-    returns = (stock_data['Close'].pct_change()).dropna()
-
-    # Calculate mu and sigma
-    mu = np.mean(returns)
-    sigma = np.std(returns)
-
-    return mu, sigma
-
-def simulate_stock_price_with_orders(n, T, M, mu, sigma, initial_price, Sf, Sh, Sl,count, order_size=0, order_direction=1):
-    dt = T/n
-    rand = np.random.normal(0, np.sqrt(dt), size=(M,n))
-
-    # Adjust drift based on order impact
-    mu += order_direction * order_size / (initial_price * M * n)
+day=0
+symbols_to_simulate = ["GOOGL", "AAPL", "MSFT", "AMZN", "Meta","PYPL","NVDA","TSLA","ORCL","SHEL"] 
 
 
-    St = np.exp(
-        (mu - sigma ** 2 / 2 ) * dt
-        + sigma * np.sqrt(dt) * rand 
-    ).T
+# Retreive stock data from desired start date until last available
+def get_stock_data(ticker, start_date):
+    today = dt.date.today()
+    end_date = today.strftime("%Y-%m-%d")
+    try:
+        # Get the stock data
+        stock_data = yf.download(ticker, start=start_date, end=end_date)
+    except:
+      return "No data found, please try again later"
+    # Calculate the daily logarithmic returns
+    returns = np.log(stock_data['Adj Close']/stock_data['Adj Close'].shift(1))
+    returns = returns.dropna()
+    # Calculate the mean rate of return (mu)
+    mu = returns.mean()
+    # Calculate the volatility (sigma)
+    sigma = returns.std()
+    # Get the initial price
+    initial_price = stock_data['Adj Close'][-1]
+    return mu, sigma, initial_price
 
-    St = np.vstack([np.ones(M), St])
-    St = initial_price * St.cumprod(axis=0)
-    cliped = np.clip(St[1], Sl, Sh)
-    modified_array = np.concatenate(([initial_price], cliped))
-
-    return modified_array[count]
+# MonteCarlo simulation function for Geometric Brownian Motion or Jump Diffusion
+def monte_carlo_simulation(num_simulations, time_steps, mu, sigma, initial_price, diffusion_type='GBM', mu_j=0, sigma_j=0, lambda_=0):
+    global day    
+    # Create an array to store the simulated prices
+    sim_prices = np.zeros((num_simulations, time_steps))
+    # Set the initial price for all simulations
+    sim_prices[:, 0] = initial_price
+    # Set the time step
+    dt = 1 / time_steps
+    # Choose the type of diffusion
+    if diffusion_type == 'GBM':
+        for i in range(1, time_steps):
+            # Generate random numbers for each simulation
+            rand = np.random.normal(0, 1, num_simulations)
+            # Use GBM to calculate the next price for each simulation
+            sim_prices[:, i] = sim_prices[:, i-1] * np.exp((mu - sigma**2 / 2) * dt + sigma * np.sqrt(dt) * rand)
+    elif diffusion_type == 'Jump':
+        for i in range(1, time_steps):
+            # Generate random numbers for each simulation
+            rand = np.random.normal(0, 1, num_simulations)
+            # Generate random numbers for the jump component
+            jump = np.random.normal(mu_j, sigma_j, num_simulations)
+            # Use Jump Diffusion to calculate the next price for each simulation
+            sim_prices[:, i] = sim_prices[:, i-1] * np.exp((mu - sigma**2 / 2 - lambda_ * (np.exp(mu_j + sigma_j ** 2 / 2) - 1)) * dt + sigma * np.sqrt(dt) * rand + jump)
+    else:
+        raise ValueError('Invalid diffusion type. Choose either GBM or Jump.')
+    return sim_prices[day][count]
 
 
 def background_thread():
@@ -69,13 +85,23 @@ def background_thread():
     global count
     while True:
         display_prices_event.wait()  # Wait for the event to be set
-        mu,sigma=calculate_mu_sigma("GOOGL","2022-10-5","2022-10-9")
-        simulated_price=simulate_stock_price_with_orders(1, 1, 598, mu, sigma, 120.9, 126.05, 127.54, 114.37, count,order_size=0, order_direction=1)
-        socketio.sleep(3)
+
+        simulated_prices = []
+        for symbol in symbols_to_simulate:
+            
+            start_date = '2010-01-01'
+            num_simulations = 5
+            time_steps = 600
+            diffusion_type ='GBM' # or 'Jump' and if jump, add mu_j, sigma_j, lambda_ to the functionsocketio.sleep(3)
+            mu, sigma, initial_price = get_stock_data(symbol, start_date)
+            simulated_price = monte_carlo_simulation(num_simulations, time_steps, mu, sigma, initial_price, diffusion_type)
+            simulated_prices.append(simulated_price)
+
+
+        socketio.sleep(3) 
         count += 1
-        price = ((requests.get(url)).json())['data']['amount']
         socketio.emit('my_response',
-                      {'data': 'Bitcoin current price (USD): ' + str(simulated_price), 'count': count})
+                      {'data': simulated_prices, 'count': count})
 
 @app.route('/')
 def index():
